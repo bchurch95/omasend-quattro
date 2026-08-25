@@ -11,8 +11,12 @@
 # quietly fetching a prebuilt binary; see OMASEND_ALLOW_PREBUILT below if you
 # would rather have the release asset than the Go toolchain.
 #
+# It also makes sure the plugin's bar icon has a place in the bar, since an
+# install that lost that entry cannot get it back with `omarchy plugin enable`
+# alone (see ensure_bar_widget below).
+#
 # Usage:
-#   bin/omasend-setup            build and install the engine
+#   bin/omasend-setup            place the bar icon, build and install the engine
 #   bin/omasend-setup --check    report what is installed, change nothing
 #
 # Overrides:
@@ -34,14 +38,83 @@ SUMS="$ROOT/engine/SHA256SUMS"
 say() { printf '%s\n' "$*"; }
 die() { printf 'omasend-setup: %s\n' "$*" >&2; exit 1; }
 
-# The pinned version comes from the manifest, so the download can never drift
+# Facts about this plugin come from its own manifest, so nothing here can drift
 # from the code that was reviewed alongside it.
-pinned_version() {
+manifest_field() {
+  field="$1"
   [ -f "$ROOT/manifest.json" ] || die "manifest.json not found in $ROOT"
   if command -v jq >/dev/null 2>&1; then
-    jq -r '.version // empty' "$ROOT/manifest.json"
+    jq -r --arg f "$field" '.[$f] // empty' "$ROOT/manifest.json"
   else
-    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/manifest.json" | head -1
+    sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" \
+      "$ROOT/manifest.json" | head -1
+  fi
+}
+
+pinned_version() { manifest_field version; }
+plugin_id() { manifest_field id; }
+
+# Which bar section the widget belongs in. The manifest is the source of truth;
+# anything unexpected falls back to the right-hand section.
+default_bar_section() {
+  section=""
+  if command -v jq >/dev/null 2>&1; then
+    section="$(jq -r '.barWidget.defaultSection // empty' "$ROOT/manifest.json" 2>/dev/null || true)"
+  else
+    section="$(sed -n 's/.*"defaultSection"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$ROOT/manifest.json" | head -1)"
+  fi
+  case "$section" in
+    left | center | right) printf '%s\n' "$section" ;;
+    *) printf 'right\n' ;;
+  esac
+}
+
+omarchy_cmd() {
+  if command -v omarchy >/dev/null 2>&1; then
+    printf 'omarchy\n'
+  elif [ -x /usr/share/omarchy/bin/omarchy ]; then
+    printf '%s\n' /usr/share/omarchy/bin/omarchy
+  fi
+}
+
+# What `omarchy plugin list` says about the widget: for a bar-widget plugin
+# "enabled" means it has a place in the bar, which is exactly what we care
+# about. "unknown" covers a shell that is not running to answer.
+bar_state() {
+  omarchy="$(omarchy_cmd)"
+  [ -n "$omarchy" ] || { printf 'unknown\n'; return 0; }
+  "$omarchy" plugin list 2>/dev/null |
+    awk -v id="$1" '$1 == id { print $2; found = 1 } END { if (!found) print "unknown" }'
+}
+
+# Put the paper-plane icon back in the bar.
+#
+# The icon is a bar-layout entry in shell.json, separate from the entry that
+# makes the panel loadable — so the panel can work perfectly while no icon
+# shows. The trap is that `omarchy plugin enable` places the widget only when
+# the id appears nowhere in shell.json: opening the panel makes the plugin
+# claim a plugins[] entry of its own, and from then on enable reports success
+# and writes nothing. Disabling first clears that reference so the placement
+# actually lands. A widget already sitting in the bar is left alone, so
+# re-running this can't move an icon the user has positioned themselves.
+ensure_bar_widget() {
+  omarchy="$(omarchy_cmd)"
+  [ -n "$omarchy" ] || return 0
+  id="$(plugin_id)"
+  [ -n "$id" ] || return 0
+
+  state="$(bar_state "$id")"
+  [ "$state" = "disabled" ] || return 0
+
+  section="$(default_bar_section)"
+  say "Placing the bar icon (shell.json has no bar entry for $id)…"
+  "$omarchy" plugin disable "$id" >/dev/null 2>&1 || true
+  if "$omarchy" plugin enable "$id" "$section" >/dev/null 2>&1; then
+    say "Bar icon placed in the $section section."
+  else
+    say "Could not place the bar icon. Enable it from Setup > Plugins, or run:"
+    say "  $omarchy plugin disable $id && $omarchy plugin enable $id $section"
   fi
 }
 
@@ -54,6 +127,11 @@ asset_name() {
 }
 
 if [ "${1:-}" = "--check" ]; then
+  case "$(bar_state "$(plugin_id)")" in
+    enabled)  say "bar icon: in the bar" ;;
+    disabled) say "bar icon: not in the bar — re-run without --check to place it" ;;
+    *)        say "bar icon: unknown (is omarchy-shell running?)" ;;
+  esac
   if [ -x "$BIN" ]; then
     say "engine: $BIN"
     exit 0
@@ -61,6 +139,10 @@ if [ "${1:-}" = "--check" ]; then
   say "engine: not installed"
   exit 1
 fi
+
+# Do this before the engine work: it needs neither Go nor a network, so a box
+# that cannot build still gets its icon back.
+ensure_bar_widget
 
 version="$(pinned_version)"
 [ -n "$version" ] || die "could not read the plugin version from manifest.json"

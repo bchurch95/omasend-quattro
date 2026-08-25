@@ -219,6 +219,34 @@ Sends are queued and delivered asynchronously; a failure raises a desktop
 notification. The installer also writes a managed block into
 `~/.claude/CLAUDE.md` so AI agents on the machine know how to use it.
 
+## Troubleshooting
+
+**No paper-plane icon in the bar.** The icon is a bar-layout entry in
+`~/.config/omarchy/shell.json`, separate from the entry that makes the panel
+loadable — so the panel can open perfectly while no icon shows. Ask the shell,
+not the bar:
+
+```sh
+omarchy plugin list | grep nosignal.omasend
+```
+
+For a bar widget, `disabled` there means "has no place in the bar", whatever
+the panel is doing. Enabling again won't fix it: `omarchy plugin enable` places
+the widget only when the plugin is referenced nowhere in `shell.json`, and
+opening the panel leaves a reference of its own. Clear it first:
+
+```sh
+omarchy plugin disable nosignal.omasend
+omarchy plugin enable nosignal.omasend right
+```
+
+Re-running `bin/omasend-setup` does exactly that for you, and leaves an icon
+you have already positioned where it is.
+
+**"Send file/folder" does nothing.** The GTK chooser needs `zenity`, which
+isn't in the Omarchy base install: `sudo pacman -S zenity`. No shell restart
+needed — the panel re-checks on the next attempt.
+
 ## Under the hood
 
 Two parts: a pure-QML shell plugin (bar widget, panel, service) and
