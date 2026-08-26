@@ -102,6 +102,12 @@ func New(self protocol.DeviceInfo, certs ...*tls.Certificate) *Discoverer {
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true,
 					Certificates:       tlsCerts,
+					GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+						if clientCert != nil {
+							return clientCert, nil
+						}
+						return &tls.Certificate{}, nil
+					},
 				},
 			},
 		},
@@ -124,26 +130,24 @@ func (d *Discoverer) Snapshot() []Peer {
 }
 
 // FindPeer waits for a known peer satisfying pred, checking peers already seen
-// first and then ones discovered while waiting. It returns the first match, or
-// ctx.Err() if the context is cancelled / times out first. It consumes the
-// Events() channel, so it must not run concurrently with another Events()
-// reader (e.g. the TUI bridge) — it is intended for the headless send path.
+// first and then polling discovered peers until ctx is cancelled / times out.
 func (d *Discoverer) FindPeer(ctx context.Context, pred func(Peer) bool) (Peer, error) {
 	for _, p := range d.Snapshot() {
 		if pred(p) {
 			return p, nil
 		}
 	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return Peer{}, ctx.Err()
-		case ev, ok := <-d.events:
-			if !ok {
-				return Peer{}, ctx.Err()
-			}
-			if ev.Kind == PeerFound && pred(ev.Peer) {
-				return ev.Peer, nil
+		case <-ticker.C:
+			for _, p := range d.Snapshot() {
+				if pred(p) {
+					return p, nil
+				}
 			}
 		}
 	}

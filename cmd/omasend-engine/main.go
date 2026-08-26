@@ -445,6 +445,9 @@ func (e *engine) resolveOffer(id string, accept bool) {
 func (e *engine) findPeer(ctx context.Context, to, ip string, wait time.Duration) (discovery.Peer, error) {
 	fctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	if ip != "" {
+		_ = e.disc.Probe(fctx, ip)
+	}
 	want := strings.ToLower(strings.TrimSpace(to))
 	return e.disc.FindPeer(fctx, func(p discovery.Peer) bool {
 		if ip != "" {

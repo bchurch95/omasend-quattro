@@ -87,6 +87,12 @@ func New(self protocol.DeviceInfo, certs ...*tls.Certificate) *Sender {
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true,
 					Certificates:       tlsCerts,
+					GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+						if clientCert != nil {
+							return clientCert, nil
+						}
+						return &tls.Certificate{}, nil
+					},
 				},
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 				TLSHandshakeTimeout:   10 * time.Second,
@@ -126,6 +132,12 @@ func (s *Sender) clientFor(fingerprint string) *http.Client {
 				// The fingerprint check below is what authenticates the peer.
 				InsecureSkipVerify: true,
 				Certificates:       tlsCerts,
+				GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+					if s.cert != nil {
+						return s.cert, nil
+					}
+					return &tls.Certificate{}, nil
+				},
 				VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 					if len(rawCerts) == 0 {
 						return fmt.Errorf("peer presented no certificate")
