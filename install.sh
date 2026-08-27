@@ -102,20 +102,20 @@ if [ -z "$PLUGIN_SRC" ]; then
   fi
 fi
 
-# ---- 3. zenity (graphical file chooser) ------------------------------------
-# The panel's "Send file/folder" buttons open a GTK chooser via zenity, which
-# is NOT in the Omarchy base install (some boxes only have it as a Steam
-# dependency). Without it the panel silently falls back to a typed-path
-# prompt, so make sure it's really here. sudo reads from /dev/tty so the
-# password prompt still works under a piped install; failure is non-fatal.
+# ---- 3. graphical file chooser (omasend-picker / zenity) -------------------
+# The panel's "Send file/folder" buttons open a file chooser via the bundled
+# omasend-picker (GTK/Portal) or zenity.
+if [ -n "$PLUGIN_SRC" ] && [ -f "$PLUGIN_SRC/bin/omasend-picker" ]; then
+  chmod +x "$PLUGIN_SRC/bin/omasend-picker"
+fi
+
 if ! command -v zenity >/dev/null 2>&1; then
-  say "Installing zenity (file chooser for panel sends — needs sudo)…"
+  say "Optional: installing zenity (needs sudo)…"
   # shellcheck disable=SC2024  # stdin redirect is for sudo's own password prompt
   if sudo pacman -S --needed --noconfirm zenity </dev/tty; then
     say "zenity installed."
   else
-    say "Could not install zenity — 'Send file/folder' will fall back to a"
-    say "typed-path prompt until you run: sudo pacman -S zenity"
+    say "Note: zenity not installed; omasend-picker will use native GTK/portal chooser."
   fi
 fi
 

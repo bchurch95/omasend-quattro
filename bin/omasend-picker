@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+omasend-picker: Graphical file and folder chooser for Omasend.
+Compatible with standard file-selection flags (zenity / portal).
+Uses zenity or kdialog if available; otherwise uses native GTK / Portal dialog.
+"""
+
+import sys
+import os
+import shutil
+import subprocess
+import argparse
+
+
+def try_zenity(argv):
+    zenity = shutil.which("zenity")
+    if zenity:
+        try:
+            res = subprocess.run([zenity] + argv, capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout:
+                sys.stdout.write(res.stdout)
+                return 0
+            return res.returncode
+        except Exception:
+            pass
+    return None
+
+
+def try_kdialog(args):
+    kdialog = shutil.which("kdialog")
+    if kdialog:
+        cmd = [kdialog]
+        if args.title:
+            cmd.extend(["--title", args.title])
+        if args.directory:
+            cmd.append("--getexistingdirectory")
+            if args.filename:
+                cmd.append(args.filename)
+        else:
+            if args.multiple:
+                cmd.append("--getopenfilename")
+                cmd.append(args.filename or "")
+                cmd.append("--multiple")
+                cmd.append("--separate-output")
+            else:
+                cmd.append("--getopenfilename")
+                if args.filename:
+                    cmd.append(args.filename)
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout:
+                lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+                if lines:
+                    sys.stdout.write(args.separator.join(lines) + "\n")
+                    return 0
+            return res.returncode
+        except Exception:
+            pass
+    return None
+
+
+def run_gtk(args):
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk, GLib
+    except Exception:
+        try:
+            import gi
+            gi.require_version("Gtk", "4.0")
+            from gi.repository import Gtk, GLib
+        except Exception as e:
+            sys.stderr.write(f"omasend-picker: GTK not available: {e}\n")
+            return 1
+
+    try:
+        GLib.set_prgname("omasend")
+        GLib.set_application_name("Omasend")
+    except Exception:
+        pass
+
+    action = Gtk.FileChooserAction.SELECT_FOLDER if args.directory else Gtk.FileChooserAction.OPEN
+    title = args.title or ("Send folder via Omasend" if args.directory else "Send files via Omasend")
+
+    # 1. Try Gtk.FileChooserNative (portal-aware)
+    try:
+        native = Gtk.FileChooserNative.new(
+            title,
+            None,
+            action,
+            "_Select" if args.directory else "_Open",
+            "_Cancel"
+        )
+        if args.multiple and not args.directory:
+            native.set_select_multiple(True)
+        if args.filename and os.path.exists(args.filename):
+            if os.path.isdir(args.filename):
+                native.set_current_folder(args.filename)
+            else:
+                native.set_filename(args.filename)
+
+        response = native.run()
+        if response == Gtk.ResponseType.ACCEPT:
+            filenames = native.get_filenames()
+            native.destroy()
+            if filenames:
+                sys.stdout.write(args.separator.join(filenames) + "\n")
+                return 0
+            return 1
+        elif response in (Gtk.ResponseType.CANCEL, Gtk.ResponseType.DELETE_EVENT, Gtk.ResponseType.CLOSE):
+            native.destroy()
+            return 1
+        native.destroy()
+    except Exception:
+        pass
+
+    # 2. Fallback to Gtk.FileChooserDialog
+    try:
+        dialog = Gtk.FileChooserDialog(
+            title=title,
+            action=action
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN if not args.directory else Gtk.STOCK_APPLY, Gtk.ResponseType.OK
+        )
+        if args.multiple and not args.directory:
+            dialog.set_select_multiple(True)
+        if args.filename and os.path.exists(args.filename):
+            if os.path.isdir(args.filename):
+                dialog.set_current_folder(args.filename)
+            else:
+                dialog.set_filename(args.filename)
+
+        response = dialog.run()
+        filenames = []
+        if response in (Gtk.ResponseType.OK, Gtk.ResponseType.ACCEPT):
+            filenames = dialog.get_filenames()
+        dialog.destroy()
+        while Gtk.events_pending():
+            Gtk.main_iteration()
+
+        if filenames:
+            sys.stdout.write(args.separator.join(filenames) + "\n")
+            return 0
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"omasend-picker: dialog error: {e}\n")
+        return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Omasend File Chooser")
+    parser.add_argument("--file-selection", action="store_true", help="Compatibility flag")
+    parser.add_argument("--multiple", action="store_true", help="Allow multiple selection")
+    parser.add_argument("--directory", action="store_true", help="Select directory instead of file")
+    parser.add_argument("--title", type=str, default="", help="Dialog title")
+    parser.add_argument("--separator", type=str, default="\n", help="Output separator")
+    parser.add_argument("--filename", type=str, default=None, help="Initial path")
+
+    args, unknown = parser.parse_known_args()
+
+    # If zenity is available on system, use it
+    if shutil.which("zenity"):
+        rc = try_zenity(sys.argv[1:])
+        if rc is not None:
+            sys.exit(rc)
+
+    # If kdialog is available, try it
+    if shutil.which("kdialog"):
+        rc = try_kdialog(args)
+        if rc is not None:
+            sys.exit(rc)
+
+    # Use native GTK / Portal
+    rc = run_gtk(args)
+    sys.exit(rc if rc is not None else 1)
+
+
+if __name__ == "__main__":
+    main()

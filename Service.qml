@@ -471,14 +471,17 @@ Item {
   }
 
   // ------------------------------------------------------------ file picker
-  // "Send a file" from the panel opens a GTK file chooser (zenity) and sends
-  // the selection straight to the chosen peer — the panel closes first so the
-  // dialog isn't fighting a keyboard-exclusive overlay. Returns false when
-  // zenity isn't available, letting the panel fall back to its path modal.
-  property bool hasZenity: false
+  // "Send a file" from the panel opens a graphical file chooser (via the
+  // bundled omasend-picker, zenity, or kdialog) and sends the selection
+  // straight to the chosen peer — the panel closes first so the dialog isn't
+  // fighting a keyboard-exclusive overlay.
+  property bool hasZenity: true
+  property bool hasPicker: true
   property var pickPeer: null
   property int pickerSeq: -1
   property var pickerPaths: []
+
+  readonly property string pickerBin: root.pluginDir + "/bin/omasend-picker"
 
   function summonStaged(paths) {
     if (!paths || paths.length === 0) return
@@ -492,8 +495,11 @@ Item {
   Process {
     id: zenityCheck
     running: true
-    command: ["sh", "-c", "command -v zenity"]
-    onExited: function(code) { root.hasZenity = (code === 0) }
+    command: ["sh", "-c", 'command -v zenity >/dev/null 2>&1 || [ -x "$1" ] || [ -f "$1" ] || command -v kdialog >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1', "picker-check", root.pickerBin]
+    onExited: function(code) {
+      root.hasPicker = (code === 0)
+      root.hasZenity = root.hasPicker
+    }
   }
 
   Process {
@@ -506,18 +512,28 @@ Item {
   // wantDir: false = multi-select files, true = pick folders (sent whole,
   // expanded on the wire by the engine).
   function pickAndSend(peer, wantDir) {
-    if (!root.hasZenity) {
-      // Re-probe so a zenity installed after shell start is picked up on
+    if (!root.hasPicker) {
+      // Re-probe so a picker installed after shell start is picked up on
       // the next attempt without a shell restart.
       zenityCheck.running = true
       return false
     }
     if (picker.running || !peer) return false
     root.pickPeer = peer
-    var cmd = ["zenity", "--file-selection", "--multiple", "--separator=\n"]
+    var title = (wantDir === true ? "Send folder to " : "Send to ")
+                + peer.alias + " via Omasend"
+    var cmd = [
+      "sh", "-c",
+      'if [ -x "$1" ]; then exec "$1" "$@"; elif [ -f "$1" ]; then exec python3 "$1" "$@"; elif command -v zenity >/dev/null 2>&1; then exec zenity "$@"; else exec omasend-picker "$@"; fi',
+      "omasend-picker-launch",
+      root.pickerBin,
+      "--file-selection",
+      "--separator=\n",
+      "--title=" + title
+    ]
     if (wantDir === true) cmd.push("--directory")
-    cmd.push("--title", (wantDir === true ? "Send folder to " : "Send to ")
-                        + peer.alias + " via Omasend")
+    else cmd.push("--multiple")
+
     picker.command = cmd
     picker.running = true
     return true
