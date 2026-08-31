@@ -224,7 +224,10 @@ type engine struct {
 	messages []messageJSON // ring buffer, newest last
 }
 
-const messageHistoryCap = 200
+const (
+	messageHistoryCap = 100
+	messageRetention  = 7 * 24 * time.Hour
+)
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -263,13 +266,76 @@ func (e *engine) peersEvent() event {
 	return ev
 }
 
+func messagesFilePath() string {
+	dir, err := config.Dir()
+	if err != nil {
+		return ""
+	}
+	_ = os.MkdirAll(dir, 0o700)
+	return filepath.Join(dir, "messages.json")
+}
+
+func (e *engine) loadSavedMessages() {
+	p := messagesFilePath()
+	if p == "" {
+		return
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	var loaded []messageJSON
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-messageRetention)
+	var valid []messageJSON
+	for _, m := range loaded {
+		t, err := time.Parse(time.RFC3339, m.Time)
+		if err == nil && t.After(cutoff) {
+			valid = append(valid, m)
+		}
+	}
+	if len(valid) > messageHistoryCap {
+		valid = valid[len(valid)-messageHistoryCap:]
+	}
+	e.msgMu.Lock()
+	e.messages = valid
+	e.msgMu.Unlock()
+}
+
+func (e *engine) saveMessagesLocked() {
+	p := messagesFilePath()
+	if p == "" {
+		return
+	}
+	data, err := json.Marshal(e.messages)
+	if err != nil {
+		return
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err == nil {
+		_ = os.Rename(tmp, p)
+	}
+}
+
 func (e *engine) recordMessage(m messageJSON) {
 	e.msgMu.Lock()
-	e.messages = append(e.messages, m)
-	if len(e.messages) > messageHistoryCap {
-		e.messages = e.messages[len(e.messages)-messageHistoryCap:]
+	defer e.msgMu.Unlock()
+	cutoff := time.Now().Add(-messageRetention)
+	var valid []messageJSON
+	for _, existing := range e.messages {
+		t, err := time.Parse(time.RFC3339, existing.Time)
+		if err == nil && t.After(cutoff) {
+			valid = append(valid, existing)
+		}
 	}
-	e.msgMu.Unlock()
+	valid = append(valid, m)
+	if len(valid) > messageHistoryCap {
+		valid = valid[len(valid)-messageHistoryCap:]
+	}
+	e.messages = valid
+	e.saveMessagesLocked()
 }
 
 func (e *engine) messageHistory() []messageJSON {
@@ -795,6 +861,7 @@ func main() {
 		cfg: cfg, disc: disc, srv: srv, sender: sender, rem: rem,
 		hub: newHub(), offers: map[string]server.AcceptRequest{},
 	}
+	eng.loadSavedMessages()
 	eng.pumpEvents(ctx)
 	disc.Announce()
 
